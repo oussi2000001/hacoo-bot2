@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 from playwright.sync_api import sync_playwright
 import os
 import re
-import base64
 
 app = Flask(__name__)
 
@@ -37,25 +36,25 @@ def generate_link():
                 {"name": "region", "value": "DE", "domain": ".hacoo.app", "path": "/"},
             ])
             
-            page = context.new_page()
-            
-            # Interceptar la respuesta de la API
             affiliate_link = None
-            
+            api_responses = []
+
             def handle_response(response):
                 nonlocal affiliate_link
                 if "promoLink" in response.url:
                     try:
                         body = response.json()
+                        api_responses.append(body)
                         if body.get("code") == 1001:
                             d = body.get("data", {})
                             if isinstance(d, dict):
-                                link = d.get("link") or d.get("promote_link")
+                                link = d.get("link") or d.get("promote_link") or d.get("url")
                                 if link:
                                     affiliate_link = link
                     except:
                         pass
-            
+
+            page = context.new_page()
             page.on("response", handle_response)
             
             page.goto("https://affiliate.hacoo.app/es-DE/promotion/link", wait_until="networkidle", timeout=30000)
@@ -63,66 +62,40 @@ def generate_link():
             
             if "join" in page.url or "sign" in page.url:
                 browser.close()
-                return jsonify({"error": "Cookie expirada - necesitas renovarla"}), 401
+                return jsonify({"error": "Cookie expirada"}), 401
             
-            # Tomar screenshot para debug
-            screenshot = base64.b64encode(page.screenshot()).decode()
-            
-            # Buscar todos los inputs y textareas
-            elements_info = page.evaluate("""() => {
-                const els = document.querySelectorAll('textarea, input[type="text"], input:not([type])');
-                return Array.from(els).map(el => ({
-                    tag: el.tagName,
-                    type: el.type,
-                    placeholder: el.placeholder,
-                    class: el.className.slice(0, 50),
-                    visible: el.offsetParent !== null
-                }));
-            }""")
-            
-            # Intentar llenar
-            filled = False
-            for selector in ["textarea", "input[type='text']", "input:not([type])", "[placeholder*='http']", "[placeholder*='url']", "[placeholder*='URL']", "[placeholder*='link']"]:
-                try:
-                    els = page.locator(selector).all()
-                    for el in els:
-                        if el.is_visible():
-                            el.fill(product_url)
-                            filled = True
-                            break
-                    if filled:
-                        break
-                except:
-                    continue
-            
-            if not filled:
-                # JavaScript fallback
-                page.evaluate(f"""() => {{
-                    const els = document.querySelectorAll('textarea, input');
-                    for (const el of els) {{
-                        if (el.offsetParent !== null) {{
-                            el.value = '{product_url}';
-                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            break;
-                        }}
-                    }}
-                }}""")
-                filled = True
-            
+            # Llenar el textarea usando su clase exacta
+            textarea = page.locator(".f-text-field__input.f-textarea__input").first
+            textarea.wait_for(state="visible", timeout=5000)
+            textarea.click()
+            textarea.fill(product_url)
             page.wait_for_timeout(500)
             
-            # Click Create Link
-            for btn in ["button:has-text('Create Link')", "button:has-text('Create')", "button:has-text('create')", "button[type='submit']", "form button"]:
-                try:
-                    b = page.locator(btn).first
-                    if b.is_visible(timeout=1000):
-                        b.click()
-                        break
-                except:
-                    continue
+            # Verificar que se llenó
+            value = textarea.input_value()
             
-            # Esperar respuesta de la API
+            # Click en Create Link
+            page.wait_for_timeout(300)
+            
+            # Buscar botón por texto
+            btn = page.get_by_role("button", name=re.compile("create link", re.IGNORECASE)).first
+            try:
+                btn.wait_for(state="visible", timeout=3000)
+                btn.click()
+            except:
+                # Fallback — cualquier botón visible
+                buttons = page.locator("button").all()
+                for b in buttons:
+                    try:
+                        if b.is_visible() and b.is_enabled():
+                            text = b.inner_text()
+                            if "create" in text.lower() or "link" in text.lower():
+                                b.click()
+                                break
+                    except:
+                        continue
+            
+            # Esperar respuesta API
             page.wait_for_timeout(8000)
             
             browser.close()
@@ -131,13 +104,14 @@ def generate_link():
                 return jsonify({"link": affiliate_link})
             else:
                 return jsonify({
-                    "error": "No se encontró el link",
-                    "elements_found": elements_info,
-                    "screenshot": screenshot[:500]  # Solo primeros 500 chars para debug
+                    "error": "No se generó el link",
+                    "textarea_value": value,
+                    "api_responses": api_responses
                 }), 500
             
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()[-500:]}), 500
 
 @app.route("/health", methods=["GET"])
 def health():
