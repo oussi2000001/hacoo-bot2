@@ -1,9 +1,8 @@
 from flask import Flask, request, jsonify
+from playwright.sync_api import sync_playwright
 import os
-import requests
-import hashlib
-import time
-import json
+import re
+import base64
 
 app = Flask(__name__)
 
@@ -19,55 +18,126 @@ def generate_link():
         return jsonify({"error": "No product_id"}), 400
 
     product_url = f"https://www.hacoo.pl/en-DE/detail/{product_id}"
-    data = json.dumps({"link": product_url}, separators=(',', ':'))
-    ct = str(int(time.time() * 1000))
-    gw_ver = "1"
-    plat = "pc"
-    appname = "saramart"
     
-    results = []
-    for sid in [9, 12, 26]:
-        sign_str = "1" + str(sid) + data + gw_ver + ct + plat + appname
-        sign = hashlib.md5(sign_str.encode()).hexdigest()
-        
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-            "Cookie": f"PROD_AUTH_TOKEN={PROD_AUTH_TOKEN}; has_token=1; gw-token={GW_TOKEN}; system=pc; lan=en; cur=EUR",
-            "Origin": "https://affiliate.hacoo.app",
-            "Referer": "https://affiliate.hacoo.app/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        }
-        
-        payload = {
-            "data": data,
-            "gw_ver": gw_ver,
-            "ct": ct,
-            "plat": plat,
-            "appname": appname,
-            "sign": sign
-        }
-        
-        try:
-            response = requests.post(
-                f"https://gw.hacoo.app/gw/dwp.aff-home-core.promoLink/1?sid={sid}",
-                data=payload,
-                headers=headers,
-                timeout=15
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
-            result = response.json()
-            results.append({"sid": sid, "sign": sign, "response": result})
             
-            if result.get("code") == 1001:
-                d = result.get("data", {})
-                link = None
-                if isinstance(d, dict):
-                    link = d.get("link") or d.get("promote_link") or d.get("url")
-                if link:
-                    return jsonify({"link": link})
-        except Exception as e:
-            results.append({"sid": sid, "error": str(e)})
-    
-    return jsonify({"error": "No se pudo generar", "debug": results}), 500
+            context.add_cookies([
+                {"name": "PROD_AUTH_TOKEN", "value": PROD_AUTH_TOKEN, "domain": "affiliate.hacoo.app", "path": "/"},
+                {"name": "has_token", "value": "1", "domain": "affiliate.hacoo.app", "path": "/"},
+                {"name": "gw-token", "value": GW_TOKEN, "domain": ".hacoo.app", "path": "/"},
+                {"name": "gw-did", "value": "web_b8709a2bdd17479a8b2e570d38c46761", "domain": ".hacoo.app", "path": "/"},
+                {"name": "system", "value": "pc", "domain": "affiliate.hacoo.app", "path": "/"},
+                {"name": "lan", "value": "en", "domain": "affiliate.hacoo.app", "path": "/"},
+                {"name": "cur", "value": "EUR", "domain": ".hacoo.app", "path": "/"},
+                {"name": "region", "value": "DE", "domain": ".hacoo.app", "path": "/"},
+            ])
+            
+            page = context.new_page()
+            
+            # Interceptar la respuesta de la API
+            affiliate_link = None
+            
+            def handle_response(response):
+                nonlocal affiliate_link
+                if "promoLink" in response.url:
+                    try:
+                        body = response.json()
+                        if body.get("code") == 1001:
+                            d = body.get("data", {})
+                            if isinstance(d, dict):
+                                link = d.get("link") or d.get("promote_link")
+                                if link:
+                                    affiliate_link = link
+                    except:
+                        pass
+            
+            page.on("response", handle_response)
+            
+            page.goto("https://affiliate.hacoo.app/es-DE/promotion/link", wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(2000)
+            
+            if "join" in page.url or "sign" in page.url:
+                browser.close()
+                return jsonify({"error": "Cookie expirada - necesitas renovarla"}), 401
+            
+            # Tomar screenshot para debug
+            screenshot = base64.b64encode(page.screenshot()).decode()
+            
+            # Buscar todos los inputs y textareas
+            elements_info = page.evaluate("""() => {
+                const els = document.querySelectorAll('textarea, input[type="text"], input:not([type])');
+                return Array.from(els).map(el => ({
+                    tag: el.tagName,
+                    type: el.type,
+                    placeholder: el.placeholder,
+                    class: el.className.slice(0, 50),
+                    visible: el.offsetParent !== null
+                }));
+            }""")
+            
+            # Intentar llenar
+            filled = False
+            for selector in ["textarea", "input[type='text']", "input:not([type])", "[placeholder*='http']", "[placeholder*='url']", "[placeholder*='URL']", "[placeholder*='link']"]:
+                try:
+                    els = page.locator(selector).all()
+                    for el in els:
+                        if el.is_visible():
+                            el.fill(product_url)
+                            filled = True
+                            break
+                    if filled:
+                        break
+                except:
+                    continue
+            
+            if not filled:
+                # JavaScript fallback
+                page.evaluate(f"""() => {{
+                    const els = document.querySelectorAll('textarea, input');
+                    for (const el of els) {{
+                        if (el.offsetParent !== null) {{
+                            el.value = '{product_url}';
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            break;
+                        }}
+                    }}
+                }}""")
+                filled = True
+            
+            page.wait_for_timeout(500)
+            
+            # Click Create Link
+            for btn in ["button:has-text('Create Link')", "button:has-text('Create')", "button:has-text('create')", "button[type='submit']", "form button"]:
+                try:
+                    b = page.locator(btn).first
+                    if b.is_visible(timeout=1000):
+                        b.click()
+                        break
+                except:
+                    continue
+            
+            # Esperar respuesta de la API
+            page.wait_for_timeout(8000)
+            
+            browser.close()
+            
+            if affiliate_link:
+                return jsonify({"link": affiliate_link})
+            else:
+                return jsonify({
+                    "error": "No se encontró el link",
+                    "elements_found": elements_info,
+                    "screenshot": screenshot[:500]  # Solo primeros 500 chars para debug
+                }), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/health", methods=["GET"])
 def health():
