@@ -64,36 +64,41 @@ def generate_link():
                 browser.close()
                 return jsonify({"error": "Cookie expirada"}), 401
             
-            # Llenar el textarea usando su clase exacta
-            textarea = page.locator(".f-text-field__input.f-textarea__input").first
-            textarea.wait_for(state="visible", timeout=5000)
-            textarea.click()
-            textarea.fill(product_url)
+            # Cerrar cualquier popup/modal que intercepte clicks
+            page.evaluate("""() => {
+                // Eliminar el portal de headlessui que bloquea
+                const portal = document.getElementById('headlessui-portal-root');
+                if (portal) portal.remove();
+                
+                // Eliminar overlays
+                const overlays = document.querySelectorAll('[class*="overlay"], [class*="modal"], [class*="dialog"], [class*="popup"], [class*="notice"]');
+                overlays.forEach(el => el.remove());
+            }""")
+            
             page.wait_for_timeout(500)
             
-            # Verificar que se llenó
-            value = textarea.input_value()
+            # Llenar textarea con JavaScript directamente
+            page.evaluate(f"""() => {{
+                const textarea = document.querySelector('.f-text-field__input.f-textarea__input');
+                if (textarea) {{
+                    textarea.value = '{product_url}';
+                    textarea.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }}""")
             
-            # Click en Create Link
-            page.wait_for_timeout(300)
+            page.wait_for_timeout(500)
             
-            # Buscar botón por texto
-            btn = page.get_by_role("button", name=re.compile("create link", re.IGNORECASE)).first
-            try:
-                btn.wait_for(state="visible", timeout=3000)
-                btn.click()
-            except:
-                # Fallback — cualquier botón visible
-                buttons = page.locator("button").all()
-                for b in buttons:
-                    try:
-                        if b.is_visible() and b.is_enabled():
-                            text = b.inner_text()
-                            if "create" in text.lower() or "link" in text.lower():
-                                b.click()
-                                break
-                    except:
-                        continue
+            # Click en Create Link con JavaScript
+            page.evaluate("""() => {
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {
+                    if (btn.textContent.toLowerCase().includes('create')) {
+                        btn.click();
+                        break;
+                    }
+                }
+            }""")
             
             # Esperar respuesta API
             page.wait_for_timeout(8000)
@@ -105,13 +110,12 @@ def generate_link():
             else:
                 return jsonify({
                     "error": "No se generó el link",
-                    "textarea_value": value,
                     "api_responses": api_responses
                 }), 500
             
     except Exception as e:
         import traceback
-        return jsonify({"error": str(e), "trace": traceback.format_exc()[-500:]}), 500
+        return jsonify({"error": str(e), "trace": traceback.format_exc()[-300:]}), 500
 
 @app.route("/health", methods=["GET"])
 def health():
