@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from playwright.sync_api import sync_playwright
 import os
+import re
 
 app = Flask(__name__)
 
@@ -19,9 +20,10 @@ def generate_link():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context()
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
             
-            # Inyectar la cookie de sesion
             context.add_cookies([{
                 "name": "PROD_AUTH_TOKEN",
                 "value": PROD_AUTH_TOKEN,
@@ -35,27 +37,68 @@ def generate_link():
             }])
             
             page = context.new_page()
+            page.goto("https://affiliate.hacoo.app/es-DE/promotion/link", wait_until="networkidle")
+            page.wait_for_timeout(3000)
             
-            # Ir a Link Customizer
-            page.goto("https://affiliate.hacoo.app/es-DE/promotion/link")
-            page.wait_for_load_state("networkidle")
+            # Intentar diferentes selectores
+            selectors = ["textarea", "input[type='text']", "[placeholder*='http']", "[class*='textarea']"]
+            filled = False
+            for selector in selectors:
+                try:
+                    el = page.locator(selector).first
+                    if el.is_visible(timeout=2000):
+                        el.fill(product_url)
+                        filled = True
+                        break
+                except:
+                    continue
             
-            # Pegar el link del producto
-            page.fill('textarea', product_url)
+            if not filled:
+                page.evaluate(f"""
+                    const inputs = document.querySelectorAll('textarea, input[type="text"]');
+                    if (inputs.length > 0) {{
+                        inputs[0].value = '{product_url}';
+                        inputs[0].dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    }}
+                """)
             
-            # Hacer clic en Create Link
-            page.locator('button:has-text("Create Link")').click()
+            # Click Create Link
+            btn_selectors = ["button:has-text('Create Link')", "button:has-text('create')", "button[type='submit']"]
+            for btn in btn_selectors:
+                try:
+                    b = page.locator(btn).first
+                    if b.is_visible(timeout=2000):
+                        b.click()
+                        break
+                except:
+                    continue
             
-            # Esperar que aparezca el link generado
-            page.wait_for_selector('text=onlyaff.app', timeout=15000)
+            page.wait_for_timeout(5000)
             
-            # Extraer el link
-            affiliate_link = page.locator('input[readonly]').first.input_value()
+            # Extraer link
+            affiliate_link = None
+            content = page.content()
+            matches = re.findall(r'https://c\.onlyaff\.app/\w+', content)
+            if matches:
+                affiliate_link = matches[0]
+            
             if not affiliate_link:
-                affiliate_link = page.locator('text=https://c.onlyaff.app').first.inner_text()
+                try:
+                    inputs = page.locator("input[readonly]").all()
+                    for inp in inputs:
+                        val = inp.input_value()
+                        if 'onlyaff' in val or 'hacoo' in val:
+                            affiliate_link = val
+                            break
+                except:
+                    pass
             
             browser.close()
-            return jsonify({"link": affiliate_link.strip()})
+            
+            if affiliate_link:
+                return jsonify({"link": affiliate_link.strip()})
+            else:
+                return jsonify({"error": "No se pudo extraer el link"}), 500
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -65,5 +108,5 @@ def health():
     return jsonify({"status": "ok"})
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
