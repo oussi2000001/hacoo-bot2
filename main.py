@@ -50,7 +50,7 @@ def generate_link():
                         if body.get("code") == 1001:
                             d = body.get("data", {})
                             if isinstance(d, dict):
-                                link = d.get("link") or d.get("promote_link") or d.get("url")
+                                link = d.get("promoLink") or d.get("link") or d.get("promote_link") or d.get("url")
                                 if link:
                                     affiliate_link = link
                     except:
