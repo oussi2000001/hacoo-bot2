@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from playwright.sync_api import sync_playwright
 import os
-import re
 
 app = Flask(__name__)
 
@@ -22,9 +21,10 @@ def generate_link():
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
             )
             
+            # Añadir TODAS las cookies del cURL real
             context.add_cookies([
                 {"name": "PROD_AUTH_TOKEN", "value": PROD_AUTH_TOKEN, "domain": "affiliate.hacoo.app", "path": "/"},
                 {"name": "has_token", "value": "1", "domain": "affiliate.hacoo.app", "path": "/"},
@@ -34,6 +34,8 @@ def generate_link():
                 {"name": "lan", "value": "en", "domain": "affiliate.hacoo.app", "path": "/"},
                 {"name": "cur", "value": "EUR", "domain": ".hacoo.app", "path": "/"},
                 {"name": "region", "value": "DE", "domain": ".hacoo.app", "path": "/"},
+                {"name": "has_uuid", "value": "true", "domain": ".hacoo.app", "path": "/"},
+                {"name": "uuid", "value": "ios_804eeed6700943cf90f7540f23f596dc_sara", "domain": ".hacoo.app", "path": "/"},
             ])
             
             affiliate_link = None
@@ -44,7 +46,7 @@ def generate_link():
                 if "promoLink" in response.url:
                     try:
                         body = response.json()
-                        api_responses.append(body)
+                        api_responses.append({"url": response.url, "body": body})
                         if body.get("code") == 1001:
                             d = body.get("data", {})
                             if isinstance(d, dict):
@@ -58,26 +60,20 @@ def generate_link():
             page.on("response", handle_response)
             
             page.goto("https://affiliate.hacoo.app/es-DE/promotion/link", wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
             
             if "join" in page.url or "sign" in page.url:
                 browser.close()
                 return jsonify({"error": "Cookie expirada"}), 401
             
-            # Cerrar cualquier popup/modal que intercepte clicks
+            # Eliminar popup bloqueador
             page.evaluate("""() => {
-                // Eliminar el portal de headlessui que bloquea
                 const portal = document.getElementById('headlessui-portal-root');
                 if (portal) portal.remove();
-                
-                // Eliminar overlays
-                const overlays = document.querySelectorAll('[class*="overlay"], [class*="modal"], [class*="dialog"], [class*="popup"], [class*="notice"]');
-                overlays.forEach(el => el.remove());
             }""")
+            page.wait_for_timeout(300)
             
-            page.wait_for_timeout(500)
-            
-            # Llenar textarea con JavaScript directamente
+            # Llenar textarea con JavaScript
             page.evaluate(f"""() => {{
                 const textarea = document.querySelector('.f-text-field__input.f-textarea__input');
                 if (textarea) {{
@@ -86,10 +82,9 @@ def generate_link():
                     textarea.dispatchEvent(new Event('change', {{ bubbles: true }}));
                 }}
             }}""")
-            
             page.wait_for_timeout(500)
             
-            # Click en Create Link con JavaScript
+            # Click botón con JavaScript
             page.evaluate("""() => {
                 const buttons = document.querySelectorAll('button');
                 for (const btn of buttons) {
