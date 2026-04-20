@@ -25,7 +25,6 @@ def get_cookies_affiliate():
     ]
 
 def get_cookies_hacoo():
-    """Cookies para hacoo.pl con la sesión del usuario"""
     return [
         {"name": "Authorization", "value": HACOO_COOKIE, "domain": ".hacoo.pl", "path": "/"},
         {"name": "cur", "value": "EUR", "domain": ".hacoo.pl", "path": "/"},
@@ -124,7 +123,6 @@ def generate_link():
 
 @app.route("/get-product-info", methods=["POST"])
 def get_product_info():
-    """Saca nombre e imagen del producto desde hacoo.pl"""
     auth = request.headers.get("X-Auth-Token", "")
     if auth != "oslinks2026":
         return jsonify({"error": "Unauthorized"}), 401
@@ -147,7 +145,6 @@ def get_product_info():
             page.goto(f"https://www.hacoo.pl/p/{product_id}", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(3000)
 
-            # Sacar nombre del producto
             name = None
             try:
                 name = page.locator("h1").first.inner_text(timeout=5000)
@@ -159,7 +156,6 @@ def get_product_info():
                 except:
                     name = f"Producto {product_id}"
 
-            # Sacar imagen principal
             image_url = None
             try:
                 img = page.locator("img").first
@@ -181,7 +177,6 @@ def get_product_info():
 
 @app.route("/publish-hacoo", methods=["POST"])
 def publish_hacoo():
-    """Publica el producto en el perfil de Hacoo del usuario"""
     auth = request.headers.get("X-Auth-Token", "")
     if auth != "oslinks2026":
         return jsonify({"error": "Unauthorized"}), 401
@@ -204,16 +199,12 @@ def publish_hacoo():
             context.add_cookies(get_cookies_hacoo())
 
             page = context.new_page()
-
-            # Ir al producto
             page.goto(f"https://www.hacoo.pl/p/{product_id}", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(3000)
 
-            # Click en los 3 puntos (más opciones)
             try:
                 page.locator("[data-testid='more-options'], button.more, .more-btn").first.click(timeout=5000)
             except:
-                # Intentar con el icono de 3 puntos
                 page.evaluate("""() => {
                     const btns = document.querySelectorAll('button, [role="button"]');
                     for (const b of btns) {
@@ -225,7 +216,6 @@ def publish_hacoo():
                 }""")
             page.wait_for_timeout(1500)
 
-            # Click en "Publicar con producto"
             try:
                 page.get_by_text("Publicar con produc", exact=False).first.click(timeout=5000)
             except:
@@ -240,14 +230,12 @@ def publish_hacoo():
                 }""")
             page.wait_for_timeout(1500)
 
-            # Click en "Editar ahora"
             try:
                 page.get_by_text("Editar ahora", exact=False).first.click(timeout=5000)
             except:
                 page.get_by_text("Edit now", exact=False).first.click(timeout=5000)
             page.wait_for_timeout(2000)
 
-            # Click en "Publicar"
             try:
                 page.get_by_text("Publicar", exact=True).last.click(timeout=5000)
             except:
@@ -269,4 +257,4 @@ def health():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, threaded=False)
