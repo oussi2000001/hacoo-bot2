@@ -288,21 +288,21 @@ def resolve_publication():
             final_url = page.url
             product_ids = []
             
-            # Buscar IDs en la URL final
+            # Buscar IDs en la URL final - soporta /p/ y /detail/
             import re
-            match_url = re.search(r'hacoo\.pl/p/(\d+)', final_url)
+            pattern = r'hacoo\.pl/(?:p|detail|en-[A-Z]+/detail)/(\d+)'
+            match_url = re.search(pattern, final_url)
             if match_url:
                 product_ids.append(match_url.group(1))
             else:
                 # Es una publicacion - buscar productos dentro
-                # Buscar en todos los links de la pagina
                 try:
                     links = page.evaluate("""() => {
                         const links = document.querySelectorAll('a[href]');
                         return Array.from(links).map(l => l.href);
                     }""")
                     for link in links:
-                        m = re.search(r'hacoo\.pl/p/(\d+)', link)
+                        m = re.search(r'hacoo\.pl/(?:p|detail)/(\d+)', link)
                         if m and m.group(1) not in product_ids:
                             product_ids.append(m.group(1))
                 except:
@@ -311,19 +311,19 @@ def resolve_publication():
                 # Buscar en el HTML completo
                 html = page.content()
                 
-                # Patron 1: links directos
-                matches = re.findall(r'hacoo\.pl/p/(\d+)', html)
+                # Patron 1: links directos /p/ o /detail/
+                matches = re.findall(r'hacoo\.pl/(?:p|detail)/(\d+)', html)
                 for pid in matches:
                     if pid not in product_ids:
                         product_ids.append(pid)
                 
-                # Patron 2: IDs en JSON del codigo fuente
-                matches2 = re.findall(r'"product_id"\s*:\s*"?(\d{7,10})"?', html)
+                # Patron 2: IDs en JSON
+                matches2 = re.findall(r'"product_id"[^:]*:[^"]*"?(\d{7,10})"?', html)
                 for pid in matches2:
                     if pid not in product_ids:
                         product_ids.append(pid)
                         
-                # Patron 3: en atributos data
+                # Patron 3: atributos data
                 matches3 = re.findall(r'data-id="(\d{7,10})"', html)
                 for pid in matches3:
                     if pid not in product_ids:
