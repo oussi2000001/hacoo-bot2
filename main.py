@@ -250,6 +250,60 @@ def publish_hacoo():
         return jsonify({"error": str(e), "trace": traceback.format_exc()[-300:]}), 500
 
 
+@app.route("/resolve-publication", methods=["POST"])
+def resolve_publication():
+    """Entra a una publicacion de Hacoo y extrae los IDs de productos"""
+    auth = request.headers.get("X-Auth-Token", "")
+    if auth != "oslinks2026":
+        return jsonify({"error": "Unauthorized"}), 401
+
+    req_data = request.json
+    pub_url = req_data.get("url", "").strip()
+
+    if not pub_url:
+        return jsonify({"error": "No url"}), 400
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+                viewport={"width": 390, "height": 844}
+            )
+            page = context.new_page()
+            page.goto(pub_url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(3000)
+
+            # Extraer todos los links de productos de la pagina
+            product_ids = []
+            links = page.evaluate("""() => {
+                const links = document.querySelectorAll('a[href]');
+                return Array.from(links).map(l => l.href);
+            }""")
+            
+            import re
+            for link in links:
+                match = re.search(r'hacoo\.pl/p/(\d+)', link)
+                if match:
+                    pid = match.group(1)
+                    if pid not in product_ids:
+                        product_ids.append(pid)
+
+            # Tambien buscar en el HTML directamente
+            html = page.content()
+            matches = re.findall(r'hacoo\.pl/p/(\d+)', html)
+            for pid in matches:
+                if pid not in product_ids:
+                    product_ids.append(pid)
+
+            browser.close()
+            return jsonify({"product_ids": product_ids, "count": len(product_ids)})
+
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e), "trace": traceback.format_exc()[-300:]}), 500
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
