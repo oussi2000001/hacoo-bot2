@@ -271,7 +271,7 @@ def resolve_publication():
                 viewport={"width": 390, "height": 844}
             )
             
-            # Añadir cookies de sesion de Hacoo para acceder a publicaciones restringidas
+            # Añadir cookies de sesion de Hacoo
             context.add_cookies([
                 {"name": "Authorization", "value": HACOO_COOKIE, "domain": ".hacoo.pl", "path": "/"},
                 {"name": "cur", "value": "EUR", "domain": ".hacoo.pl", "path": "/"},
@@ -279,81 +279,75 @@ def resolve_publication():
                 {"name": "lan", "value": "es", "domain": ".hacoo.pl", "path": "/"},
             ])
 
-            page = context.new_page()
-            
-            # Primero resolver el link corto si es necesario
-            page.goto(pub_url, wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(6000)
-            # Scroll para cargar productos lazy
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(3000)
-            
-            final_url = page.url
+            # Interceptar respuestas de la API de Hacoo para capturar IDs reales
             product_ids = []
-            
-            # Buscar IDs en la URL final - soporta /p/ y /detail/
+            api_responses = []
             import re
-            pattern = r'hacoo\.pl/(?:p|detail|en-[A-Z]+/detail)/(\d+)'
-            match_url = re.search(pattern, final_url)
-            if match_url:
-                product_ids.append(match_url.group(1))
-            else:
-                # Es una publicacion - buscar productos dentro
+
+            def handle_response(response):
                 try:
-                    links = page.evaluate("""() => {
-                        const links = document.querySelectorAll('a[href]');
-                        return Array.from(links).map(l => l.href);
-                    }""")
-                    for link in links:
-                        m = re.search(r'hacoo\.pl/(?:p|detail)/(\d+)', link)
-                        if m and m.group(1) not in product_ids:
-                            product_ids.append(m.group(1))
+                    if any(x in response.url for x in ["product", "item", "goods", "detail", "post"]):
+                        body = response.json()
+                        body_str = str(body)
+                        # Buscar IDs de productos en las respuestas API
+                        ids = re.findall(r"'?"?product_id"?'?\s*:\s*['"]?(\d{7,10})['"]?", body_str)
+                        for pid in ids:
+                            if pid not in product_ids:
+                                product_ids.append(pid)
+                        # Tambien buscar "id" seguido de numeros largos
+                        ids2 = re.findall(r'"id"\s*:\s*(\d{7,10})', body_str)
+                        for pid in ids2:
+                            if pid not in product_ids:
+                                product_ids.append(pid)
                 except:
                     pass
 
-                # Buscar en el HTML completo
+            page = context.new_page()
+            page.on("response", handle_response)
+
+            # Navegar a la publicacion
+            page.goto(pub_url, wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(3000)
+            
+            # Intentar hacer click en el boton de descuento / canjear
+            try:
+                page.evaluate("""() => {
+                    const buttons = document.querySelectorAll('button, a, [role="button"]');
+                    for (const btn of buttons) {
+                        const txt = btn.textContent.toLowerCase();
+                        if (txt.includes('canjear') || txt.includes('dto') || 
+                            txt.includes('descuento') || txt.includes('claim') ||
+                            txt.includes('get') || txt.includes('obtener') ||
+                            txt.includes('ver') || txt.includes('shop')) {
+                            btn.click();
+                            break;
+                        }
+                    }
+                }""")
+                page.wait_for_timeout(4000)
+            except:
+                pass
+
+            page.wait_for_timeout(3000)
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(3000)
+
+            final_url = page.url
+
+            # Si no capturamos IDs via API, buscar en el HTML
+            if not product_ids:
                 html = page.content()
-                
-                # Patron 1: links directos /p/ o /detail/
-                matches = re.findall(r'hacoo\.pl/(?:p|detail)/(\d+)', html)
+                # Buscar en links
+                links = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href)")
+                for link in links:
+                    m = re.search(r'hacoo\.pl/(?:p|detail)/(\d+)', link)
+                    if m and m.group(1) not in product_ids:
+                        product_ids.append(m.group(1))
+                # Buscar en HTML
+                matches = re.findall(r'"product_id"\s*:\s*"?(\d{7,10})"?', html)
                 for pid in matches:
                     if pid not in product_ids:
                         product_ids.append(pid)
-                
-                # Patron 2: IDs en JSON
-                matches2 = re.findall(r'"product_id"[^:]*:[^"]*"?(\d{7,10})"?', html)
-                for pid in matches2:
-                    if pid not in product_ids:
-                        product_ids.append(pid)
-                        
-                # Patron 3: atributos data
-                matches3 = re.findall(r'data-id="(\d{7,10})"', html)
-                for pid in matches3:
-                    if pid not in product_ids:
-                        product_ids.append(pid)
-
-                # Si aun no encontramos nada, hacer click en el primer producto visible
-                if not product_ids:
-                    try:
-                        # Buscar imagenes de productos clickables
-                        page.wait_for_selector('img', timeout=5000)
-                        page.evaluate("""() => {
-                            const imgs = document.querySelectorAll('img');
-                            for (const img of imgs) {
-                                const parent = img.closest('a');
-                                if (parent && parent.href && parent.href.includes('hacoo')) {
-                                    parent.click();
-                                    break;
-                                }
-                            }
-                        }""")
-                        page.wait_for_timeout(3000)
-                        new_url = page.url
-                        m = re.search(r'hacoo\.pl/p/(\d+)', new_url)
-                        if m:
-                            product_ids.append(m.group(1))
-                    except:
-                        pass
 
             browser.close()
             
