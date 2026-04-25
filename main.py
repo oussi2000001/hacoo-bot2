@@ -282,8 +282,11 @@ def resolve_publication():
             page = context.new_page()
             
             # Primero resolver el link corto si es necesario
-            page.goto(pub_url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(4000)
+            page.goto(pub_url, wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(6000)
+            # Scroll para cargar productos lazy
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(3000)
             
             final_url = page.url
             product_ids = []
