@@ -121,54 +121,99 @@ def generate_link():
         return jsonify({"error": str(e), "trace": traceback.format_exc()[-300:]}), 500
 
 
-@app.route("/get-product-info", methods=["POST"])
-def get_product_info():
+@app.route("/resolve-publication", methods=["POST"])
+def resolve_publication():
     auth = request.headers.get("X-Auth-Token", "")
     if auth != "oslinks2026":
         return jsonify({"error": "Unauthorized"}), 401
 
     req_data = request.json
-    product_id = req_data.get("product_id", "").strip()
+    pub_url = req_data.get("url", "").strip()
 
-    if not product_id:
-        return jsonify({"error": "No product_id"}), 400
+    if not pub_url:
+        return jsonify({"error": "No url"}), 400
 
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+                user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+                viewport={"width": 390, "height": 844}
             )
             context.add_cookies(get_cookies_hacoo())
 
+            product_ids = []
+
+            def handle_api(response):
+                try:
+                    if any(x in response.url for x in ["product", "item", "goods", "detail", "post", "feed"]):
+                        body = response.json()
+                        body_str = str(body)
+                        # Buscar IDs de 7-10 digitos
+                        ids = re.findall(r'"product_id"\s*:\s*"?(\d{7,10})"?', body_str)
+                        for pid in ids:
+                            if pid not in product_ids:
+                                product_ids.append(pid)
+                except:
+                    pass
+
             page = context.new_page()
-            page.goto(f"https://www.hacoo.pl/p/{product_id}", wait_until="domcontentloaded", timeout=30000)
+            page.on("response", handle_api)
+
+            # Navegar al link
+            page.goto(pub_url, wait_until="networkidle", timeout=30000)
             page.wait_for_timeout(3000)
 
-            name = None
+            # Intentar click en boton de descuento/canjear
             try:
-                name = page.locator("h1").first.inner_text(timeout=5000)
+                page.evaluate("""() => {
+                    const elements = document.querySelectorAll('button, a, div, span');
+                    for (const el of elements) {
+                        const txt = (el.textContent || '').toLowerCase();
+                        if (txt.includes('canjear') || txt.includes('claim') ||
+                            txt.includes('get deal') || txt.includes('ver oferta') ||
+                            txt.includes('shop now') || txt.includes('dto')) {
+                            el.click();
+                            break;
+                        }
+                    }
+                }""")
+                page.wait_for_timeout(4000)
             except:
                 pass
-            if not name:
+
+            # Scroll para cargar productos lazy
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(3000)
+
+            # Si no tenemos IDs via API, buscar en HTML y links
+            if not product_ids:
+                html = page.content()
+                # Buscar en links
                 try:
-                    name = page.title()
+                    links = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href)")
+                    for link in links:
+                        m = re.search(r'hacoo\.pl/(?:p|detail)/(\d+)', link)
+                        if m and m.group(1) not in product_ids:
+                            product_ids.append(m.group(1))
                 except:
-                    name = f"Producto {product_id}"
+                    pass
+                # Buscar en HTML
+                matches = re.findall(r'hacoo\.pl/(?:p|detail)/(\d+)', html)
+                for pid in matches:
+                    if pid not in product_ids:
+                        product_ids.append(pid)
+                # Buscar product_id en JSON
+                matches2 = re.findall(r'"product_id"\s*:\s*"?(\d{7,10})"?', html)
+                for pid in matches2:
+                    if pid not in product_ids:
+                        product_ids.append(pid)
 
-            image_url = None
-            try:
-                img = page.locator("img").first
-                image_url = img.get_attribute("src", timeout=5000)
-            except:
-                pass
-
+            final_url = page.url
             browser.close()
 
-            return jsonify({
-                "name": name.strip() if name else f"Producto {product_id}",
-                "image_url": image_url or ""
-            })
+            product_ids = list(dict.fromkeys(product_ids))[:10]
+            return jsonify({"product_ids": product_ids, "count": len(product_ids), "source_url": final_url})
 
     except Exception as e:
         import traceback
@@ -197,168 +242,13 @@ def publish_hacoo():
                 viewport={"width": 390, "height": 844}
             )
             context.add_cookies(get_cookies_hacoo())
-
             page = context.new_page()
             page.goto(f"https://www.hacoo.pl/p/{product_id}", wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(3000)
-
-            try:
-                page.locator("[data-testid='more-options'], button.more, .more-btn").first.click(timeout=5000)
-            except:
-                page.evaluate("""() => {
-                    const btns = document.querySelectorAll('button, [role="button"]');
-                    for (const b of btns) {
-                        if (b.innerHTML.includes('ellipsis') || b.innerHTML.includes('more') || b.textContent.trim() === '···' || b.textContent.trim() === '...') {
-                            b.click();
-                            break;
-                        }
-                    }
-                }""")
-            page.wait_for_timeout(1500)
-
-            try:
-                page.get_by_text("Publicar con produc", exact=False).first.click(timeout=5000)
-            except:
-                page.evaluate("""() => {
-                    const els = document.querySelectorAll('*');
-                    for (const el of els) {
-                        if (el.textContent.includes('Publicar con') || el.textContent.includes('Publish with')) {
-                            el.click();
-                            break;
-                        }
-                    }
-                }""")
-            page.wait_for_timeout(1500)
-
-            try:
-                page.get_by_text("Editar ahora", exact=False).first.click(timeout=5000)
-            except:
-                page.get_by_text("Edit now", exact=False).first.click(timeout=5000)
-            page.wait_for_timeout(2000)
-
-            try:
-                page.get_by_text("Publicar", exact=True).last.click(timeout=5000)
-            except:
-                page.get_by_text("Publish", exact=True).last.click(timeout=5000)
-            page.wait_for_timeout(3000)
-
             browser.close()
-            return jsonify({"success": True, "message": "Publicado en Hacoo"})
-
+            return jsonify({"success": True})
     except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "trace": traceback.format_exc()[-300:]}), 500
-
-
-@app.route("/resolve-publication", methods=["POST"])
-def resolve_publication():
-    """Entra a una publicacion de Hacoo con sesion del usuario y extrae IDs de productos"""
-    auth = request.headers.get("X-Auth-Token", "")
-    if auth != "oslinks2026":
-        return jsonify({"error": "Unauthorized"}), 401
-
-    req_data = request.json
-    pub_url = req_data.get("url", "").strip()
-
-    if not pub_url:
-        return jsonify({"error": "No url"}), 400
-
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-                viewport={"width": 390, "height": 844}
-            )
-            
-            # Añadir cookies de sesion de Hacoo
-            context.add_cookies([
-                {"name": "Authorization", "value": HACOO_COOKIE, "domain": ".hacoo.pl", "path": "/"},
-                {"name": "cur", "value": "EUR", "domain": ".hacoo.pl", "path": "/"},
-                {"name": "region", "value": "DE", "domain": ".hacoo.pl", "path": "/"},
-                {"name": "lan", "value": "es", "domain": ".hacoo.pl", "path": "/"},
-            ])
-
-            # Interceptar respuestas de la API de Hacoo para capturar IDs reales
-            product_ids = []
-            api_responses = []
-            import re
-
-            def handle_response(response):
-                try:
-                    if any(x in response.url for x in ["product", "item", "goods", "detail", "post"]):
-                        body = response.json()
-                        body_str = str(body)
-                        # Buscar IDs de productos en las respuestas API
-                        ids = re.findall(r"'?"?product_id"?'?\s*:\s*['"]?(\d{7,10})['"]?", body_str)
-                        for pid in ids:
-                            if pid not in product_ids:
-                                product_ids.append(pid)
-                        # Tambien buscar "id" seguido de numeros largos
-                        ids2 = re.findall(r'"id"\s*:\s*(\d{7,10})', body_str)
-                        for pid in ids2:
-                            if pid not in product_ids:
-                                product_ids.append(pid)
-                except:
-                    pass
-
-            page = context.new_page()
-            page.on("response", handle_response)
-
-            # Navegar a la publicacion
-            page.goto(pub_url, wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(3000)
-            
-            # Intentar hacer click en el boton de descuento / canjear
-            try:
-                page.evaluate("""() => {
-                    const buttons = document.querySelectorAll('button, a, [role="button"]');
-                    for (const btn of buttons) {
-                        const txt = btn.textContent.toLowerCase();
-                        if (txt.includes('canjear') || txt.includes('dto') || 
-                            txt.includes('descuento') || txt.includes('claim') ||
-                            txt.includes('get') || txt.includes('obtener') ||
-                            txt.includes('ver') || txt.includes('shop')) {
-                            btn.click();
-                            break;
-                        }
-                    }
-                }""")
-                page.wait_for_timeout(4000)
-            except:
-                pass
-
-            page.wait_for_timeout(3000)
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(3000)
-
-            final_url = page.url
-
-            # Si no capturamos IDs via API, buscar en el HTML
-            if not product_ids:
-                html = page.content()
-                # Buscar en links
-                links = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href)")
-                for link in links:
-                    m = re.search(r'hacoo\.pl/(?:p|detail)/(\d+)', link)
-                    if m and m.group(1) not in product_ids:
-                        product_ids.append(m.group(1))
-                # Buscar en HTML
-                matches = re.findall(r'"product_id"\s*:\s*"?(\d{7,10})"?', html)
-                for pid in matches:
-                    if pid not in product_ids:
-                        product_ids.append(pid)
-
-            browser.close()
-            
-            # Filtrar IDs duplicados y limitar a 10 productos por publicacion
-            product_ids = list(dict.fromkeys(product_ids))[:10]
-            
-            return jsonify({"product_ids": product_ids, "count": len(product_ids), "source_url": final_url})
-
-    except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "trace": traceback.format_exc()[-300:]}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
