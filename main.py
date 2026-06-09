@@ -32,6 +32,10 @@ def get_cookies_hacoo():
         {"name": "lan", "value": "es", "domain": ".hacoo.pl", "path": "/"},
     ]
 
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({"status": "ok"}), 200
+
 @app.route("/generate-link", methods=["POST"])
 def generate_link():
     auth = request.headers.get("X-Auth-Token", "")
@@ -149,7 +153,6 @@ def resolve_publication():
                     if any(x in response.url for x in ["product", "item", "goods", "detail", "post", "feed"]):
                         body = response.json()
                         body_str = str(body)
-                        # Buscar IDs de 7-10 digitos
                         ids = re.findall(r'"product_id"\s*:\s*"?(\d{7,10})"?', body_str)
                         for pid in ids:
                             if pid not in product_ids:
@@ -160,11 +163,9 @@ def resolve_publication():
             page = context.new_page()
             page.on("response", handle_api)
 
-            # Navegar al link
             page.goto(pub_url, wait_until="networkidle", timeout=30000)
             page.wait_for_timeout(3000)
 
-            # Intentar click en boton de descuento/canjear
             try:
                 page.evaluate("""() => {
                     const elements = document.querySelectorAll('button, a, div, span');
@@ -182,14 +183,11 @@ def resolve_publication():
             except:
                 pass
 
-            # Scroll para cargar productos lazy
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             page.wait_for_timeout(3000)
 
-            # Si no tenemos IDs via API, buscar en HTML y links
             if not product_ids:
                 html = page.content()
-                # Buscar en links
                 try:
                     links = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).map(a => a.href)")
                     for link in links:
@@ -198,12 +196,10 @@ def resolve_publication():
                             product_ids.append(m.group(1))
                 except:
                     pass
-                # Buscar en HTML
                 matches = re.findall(r'hacoo\.pl/(?:p|detail)/(\d+)', html)
                 for pid in matches:
                     if pid not in product_ids:
                         product_ids.append(pid)
-                # Buscar product_id en JSON
                 matches2 = re.findall(r'"product_id"\s*:\s*"?(\d{7,10})"?', html)
                 for pid in matches2:
                     if pid not in product_ids:
